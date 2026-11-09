@@ -1,0 +1,42 @@
+# Handoff dataset, whole 1280x720 frames (built by
+# avision/training/build_uncropped_handoff_dataset.py). Roboflow COCO layout:
+# <split>/_annotations.coco.json next to the images, masks as compressed RLE.
+#
+# Categories are id 1 = person, 2 = clothing. remap_mscoco_category is off, so the
+# category id IS the class index: num_classes = 3 and class 0 is never used. That keeps
+# COCO evaluation on the original ids; the DeepStream export subtracts 1 so the emitted
+# class ids are 0-based against labels.txt (person, clothing).
+#
+# No `transforms` here: this file is included after the detector configs, and an
+# `ops: ~` would wipe the augmentation pipeline they define.
+
+task: detection
+
+num_classes: 3
+remap_mscoco_category: False
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /mnt/data/computer-vision/product-counting/annotation/annotated/20261109_075051/merged/0911-handoff-fullframe-v1/train
+    ann_file: /mnt/data/computer-vision/product-counting/annotation/annotated/20261109_075051/merged/0911-handoff-fullframe-v1/train/_annotations.coco.json
+    return_masks: True
+  shuffle: True
+  num_workers: 8
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /mnt/data/computer-vision/product-counting/annotation/annotated/20261109_075051/merged/0911-handoff-fullframe-v1/valid
+    ann_file: /mnt/data/computer-vision/product-counting/annotation/annotated/20261109_075051/merged/0911-handoff-fullframe-v1/valid/_annotations.coco.json
+    return_masks: False   # segm is scored against the annotation file, not loaded masks
+  shuffle: False
+  num_workers: 8
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

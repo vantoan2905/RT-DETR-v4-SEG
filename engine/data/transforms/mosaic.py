@@ -99,6 +99,8 @@ class Mosaic(T.Transform):
 
             merged_image.paste(img, placement_offsets[i])
             target['boxes'] = target['boxes'] + offsets[i]
+            if 'masks' in target:
+                target['masks'] = self._place_masks(target['masks'], placement_offsets[i], max_height, max_width)
             mosaic_target.append(target)
 
         merged_target = {}
@@ -106,6 +108,18 @@ class Mosaic(T.Transform):
             merged_target[key] = torch.cat([target[key] for target in mosaic_target])
 
         return merged_image, merged_target
+
+    @staticmethod
+    def _place_masks(masks, offset, max_height, max_width):
+        """Paste (N, h, w) instance masks onto the (2*max_height, 2*max_width) mosaic
+        canvas at ``offset`` = (x, y), matching where the image itself was pasted.
+        Only the first two values are read: PIL's ``Image.paste`` extends the list it is
+        given in place to (x, y, x + w, y + h)."""
+        x, y = int(offset[0]), int(offset[1])
+        canvas = torch.zeros((masks.shape[0], 2 * max_height, 2 * max_width), dtype=masks.dtype)
+        h, w = masks.shape[-2:]
+        canvas[:, y:y + h, x:x + w] = masks
+        return canvas
 
     def create_mosaic_from_dataset(self, images, targets, max_height, max_width):
         """Creates a mosaic image by combining multiple images."""
@@ -120,6 +134,9 @@ class Mosaic(T.Transform):
         for key in targets[0]:
             if key == 'boxes':
                 values = [target[key] + offsets[i] for i, target in enumerate(targets)]
+            elif key == 'masks':
+                values = [self._place_masks(target[key], placement_offsets[i], max_height, max_width)
+                          for i, target in enumerate(targets)]
             else:
                 values = [target[key] for target in targets]
 

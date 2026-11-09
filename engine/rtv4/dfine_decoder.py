@@ -21,6 +21,7 @@ from .dfine_utils import weighting_function, distance2bbox
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func_v2, get_activation, inverse_sigmoid
 from .utils import bias_init_with_prob
+from .mask_head import MaskFeatureHead
 from ..core import register
 
 __all__ = ['DFINETransformer']
@@ -350,6 +351,7 @@ class TransformerDecoder(nn.Module):
         dec_out_logits = []
         dec_out_pred_corners = []
         dec_out_refs = []
+        dec_out_hidden = []  # query features per recorded layer, for the mask head
         if not hasattr(self, 'project'):
             project = weighting_function(self.reg_max, up, reg_scale)
         else:
@@ -388,6 +390,7 @@ class TransformerDecoder(nn.Module):
                 dec_out_bboxes.append(inter_ref_bbox)
                 dec_out_pred_corners.append(pred_corners)
                 dec_out_refs.append(ref_points_initial)
+                dec_out_hidden.append(output)
 
                 if not self.training:
                     break
@@ -397,7 +400,8 @@ class TransformerDecoder(nn.Module):
             output_detach = output.detach()
 
         return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), \
-               torch.stack(dec_out_pred_corners), torch.stack(dec_out_refs), pre_bboxes, pre_scores
+               torch.stack(dec_out_pred_corners), torch.stack(dec_out_refs), pre_bboxes, pre_scores, \
+               dec_out_hidden
 
 
 @register()
@@ -431,10 +435,16 @@ class DFINETransformer(nn.Module):
                  reg_scale=4.,
                  layer_scale=1,
                  mlp_act='relu',
+                 mask_dim=0,
+                 mask_act='silu',
                  ):
+        """mask_dim > 0 adds the instance-segmentation head (engine/rtv4/mask_head.py):
+        outputs gain 'pred_mask_embed' (B, Q, mask_dim) and 'mask_features'
+        (B, mask_dim, H/4, W/4). mask_dim = 0 keeps the upstream detector unchanged."""
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
+        mask_in_channels = feat_channels[0]
 
         for _ in range(num_levels - len(feat_strides)):
             feat_strides.append(feat_strides[-1] * 2)
@@ -509,6 +519,15 @@ class DFINETransformer(nn.Module):
             [MLP(hidden_dim, hidden_dim, 4 * (self.reg_max+1), 3, act=mlp_act) for _ in range(self.eval_idx + 1)]
           + [MLP(scaled_dim, scaled_dim, 4 * (self.reg_max+1), 3, act=mlp_act) for _ in range(num_layers - self.eval_idx - 1)])
         self.integral = Integral(self.reg_max)
+
+        # instance segmentation head (custom)
+        self.mask_dim = mask_dim
+        if mask_dim > 0:
+            # Every recorded decoder layer must share hidden_dim so one MLP serves them all.
+            assert layer_scale == 1 or self.eval_idx == num_layers - 1, \
+                'mask head needs layer_scale == 1 (or no wide layers after eval_idx)'
+            self.mask_feature_head = MaskFeatureHead(mask_in_channels, mask_dim, act=mask_act)
+            self.mask_embed_head = MLP(hidden_dim, hidden_dim, mask_dim, 3, act=mlp_act)
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -728,7 +747,7 @@ class DFINETransformer(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits, out_corners, out_refs, pre_bboxes, pre_logits = self.decoder(
+        out_bboxes, out_logits, out_corners, out_refs, pre_bboxes, pre_logits, out_hidden = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
@@ -754,6 +773,12 @@ class DFINETransformer(nn.Module):
             dn_out_corners, out_corners = torch.split(out_corners, dn_meta['dn_num_split'], dim=2)
             dn_out_refs, out_refs = torch.split(out_refs, dn_meta['dn_num_split'], dim=2)
 
+            # masks are supervised on matched queries only, so denoising queries are dropped
+            out_hidden = [torch.split(h, dn_meta['dn_num_split'], dim=1)[1] for h in out_hidden]
+
+        if self.mask_dim > 0:
+            mask_features = self.mask_feature_head(feats[0])
+            mask_embeds = [self.mask_embed_head(h) for h in out_hidden]
 
         if self.training:
             out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_corners': out_corners[-1],
@@ -761,9 +786,17 @@ class DFINETransformer(nn.Module):
         else:
             out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
 
+        if self.mask_dim > 0:
+            out['pred_mask_embed'] = mask_embeds[-1]
+            out['mask_features'] = mask_features
+
         if self.training and self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss2(out_logits[:-1], out_bboxes[:-1], out_corners[:-1], out_refs[:-1],
                                                      out_corners[-1], out_logits[-1])
+            if self.mask_dim > 0:
+                for aux, embed in zip(out['aux_outputs'], mask_embeds[:-1]):
+                    aux['pred_mask_embed'] = embed
+                    aux['mask_features'] = mask_features
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['pre_outputs'] = {'pred_logits': pre_logits, 'pred_boxes': pre_bboxes}
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}

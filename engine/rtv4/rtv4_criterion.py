@@ -16,6 +16,7 @@ import copy
 
 from .dfine_utils import bbox2distance
 from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
+from .mask_head import sigmoid_bce_loss, dice_loss
 from ..misc.dist_utils import get_world_size, is_dist_available_and_initialized
 from ..core import register
 
@@ -273,6 +274,36 @@ class RTv4Criterion(nn.Module):
 
         return losses
 
+    def loss_masks(self, outputs, targets, indices, num_boxes):
+        """BCE + dice between matched queries' masks and their GT instance masks (custom).
+
+        Outputs without a mask head (encoder / pre / denoising heads) contribute nothing.
+        Masks are built per image from the matched queries only, at the mask-feature
+        resolution (H/4); GT masks are resized to that grid, so multi-scale batches and
+        any input size work unchanged."""
+        if 'pred_mask_embed' not in outputs:
+            return {}
+        mask_embed, mask_features = outputs['pred_mask_embed'], outputs['mask_features']
+        h, w = mask_features.shape[-2:]
+
+        pred_masks, target_masks = [], []
+        for b, (src, tgt) in enumerate(indices):
+            if len(src) == 0:
+                continue
+            pred_masks.append(torch.einsum('kd,dhw->khw', mask_embed[b, src], mask_features[b]))
+            gt = targets[b]['masks'][tgt].float()
+            target_masks.append(F.interpolate(gt[:, None], size=(h, w), mode='bilinear', align_corners=False)[:, 0])
+
+        if not pred_masks:
+            zero = mask_features.sum() * 0.0  # keep the graph connected
+            return {'loss_mask': zero, 'loss_dice': zero}
+        pred_masks = torch.cat(pred_masks).float()
+        target_masks = torch.cat(target_masks)
+        return {
+            'loss_mask': sigmoid_bce_loss(pred_masks, target_masks).sum() / num_boxes,
+            'loss_dice': dice_loss(pred_masks, target_masks).sum() / num_boxes,
+        }
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -319,6 +350,7 @@ class RTv4Criterion(nn.Module):
             'mal': self.loss_labels_mal,
             'local': self.loss_local,
             'distill': self.loss_distillation,  # NEW: Add distillation loss
+            'masks': self.loss_masks,  # custom: instance segmentation
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)

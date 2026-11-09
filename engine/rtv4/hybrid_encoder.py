@@ -425,8 +425,11 @@ class HybridEncoder(nn.Module):
                     pos_embed = self.build_2d_sincos_position_embedding(
                         w, h, self.hidden_dim, self.pe_temperature, device=src_flatten.device)
                 else:
-                    # pos_embed is registered as buffer (done in inference wrapper), already on correct device
+                    # pos_embed is a plain attribute, not a buffer, so model.to(device) leaves it
+                    # on the CPU; move it here (a no-op once it is on the right device).
                     pos_embed = getattr(self, f'pos_embed{enc_ind}', None)
+                    if pos_embed is not None:
+                        pos_embed = pos_embed.to(src_flatten.device)
 
                 memory :torch.Tensor = self.encoder[i](src_flatten, src_mask=None, pos_embed=pos_embed)
 

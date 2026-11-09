@@ -1,0 +1,55 @@
+# RT-DETRv4-S + instance segmentation, trained on the handoff full-frame dataset.
+#
+#   python train.py -c configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml --use-amp --seed 0
+#
+# Same detector as configs/rtv4/rtv4_hgnetv2_s_coco.yml minus the DINOv3 teacher (its
+# repo and weights are not on this machine; the distill loss is then 0). To enable it,
+# copy the teacher_model / HybridEncoder.distill_teacher_dim / RTv4Criterion.distill_*
+# blocks from that file once dinov3/ and pretrain/dinov3_vitb16_*.pth exist.
+#
+# Input is the whole frame stretched to 640x640 (no letterbox), as nvinfer does with
+# maintain-aspect-ratio=0 in the avision pipeline.
+
+__include__: [
+  '../dfine/dfine_hgnetv2_s_coco.yml',
+  '../base/rtv4.yml',
+  '../dataset/handoff_fullframe_seg.yml',
+  '../base/rtv4_seg.yml',
+]
+
+output_dir: ./outputs/rtv4_seg_hgnetv2_s_handoff
+
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*bn).*$'
+      lr: 0.0001
+    -
+      params: '^(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+# ~1.3k training images: a shorter schedule than COCO's 132 epochs, same shape
+# (strong aug -> flat LR -> cosine -> last epochs without aug).
+epoches: 80
+flat_epoch: 40
+no_aug_epoch: 8
+warmup_iter: 500
+
+train_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      policy:
+        epoch: [4, 40, 72]
+  collate_fn:
+    mixup_epochs: [4, 40]
+    stop_epoch: 72
+
+val_dataloader:
+  total_batch_size: 16
+
+checkpoint_freq: 10

@@ -154,6 +154,9 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 updated_targets[i]['boxes'] = torch.cat([targets[i]['boxes'], shifted_targets[i]['boxes']], dim=0)
                 updated_targets[i]['labels'] = torch.cat([targets[i]['labels'], shifted_targets[i]['labels']], dim=0)
                 updated_targets[i]['area'] = torch.cat([targets[i]['area'], shifted_targets[i]['area']], dim=0)
+                if 'masks' in targets[i]:
+                    # every image of the batch already has the same size here (Resize op)
+                    updated_targets[i]['masks'] = torch.cat([targets[i]['masks'], shifted_targets[i]['masks']], dim=0)
 
                 # Add mixup ratio to targets
                 updated_targets[i]['mixup'] = torch.tensor(
@@ -193,7 +196,10 @@ class BatchImageCollateFunction(BaseCollateFunction):
             images = F.interpolate(images, size=sz)
             if 'masks' in targets[0]:
                 for tg in targets:
-                    tg['masks'] = F.interpolate(tg['masks'], size=sz, mode='nearest')
-                raise NotImplementedError('')
+                    # (N, H, W) instance masks; nearest keeps them binary
+                    if tg['masks'].shape[0] == 0:
+                        tg['masks'] = torch.zeros((0, *images.shape[-2:]), dtype=torch.bool, device=tg['masks'].device)
+                    else:
+                        tg['masks'] = F.interpolate(tg['masks'][:, None].float(), size=sz, mode='nearest')[:, 0] > 0.5
 
         return images, targets

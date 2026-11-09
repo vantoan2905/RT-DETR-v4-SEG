@@ -91,9 +91,19 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
+    """Polygons, uncompressed RLE ({'counts': [..]}) and compressed RLE ({'counts': '..'})
+    are all accepted (Roboflow exports and pycocotools-encoded masks use the RLE forms);
+    an empty segmentation gives an empty mask."""
     masks = []
     for polygons in segmentations:
-        rles = coco_mask.frPyObjects(polygons, height, width)
+        if isinstance(polygons, dict):
+            rles = coco_mask.frPyObjects(polygons, height, width) \
+                if isinstance(polygons['counts'], list) else polygons
+        elif len(polygons) == 0:
+            masks.append(torch.zeros((height, width), dtype=torch.bool))
+            continue
+        else:
+            rles = coco_mask.frPyObjects(polygons, height, width)
         mask = coco_mask.decode(rles)
         if len(mask.shape) < 3:
             mask = mask[..., None]
@@ -103,7 +113,7 @@ def convert_coco_poly_to_mask(segmentations, height, width):
     if masks:
         masks = torch.stack(masks, dim=0)
     else:
-        masks = torch.zeros((0, height, width), dtype=torch.uint8)
+        masks = torch.zeros((0, height, width), dtype=torch.bool)
     return masks
 
 

@@ -1,0 +1,25 @@
+# Instance segmentation on top of RT-DETRv4 (custom, see engine/rtv4/mask_head.py).
+# Include AFTER the detector configs: it only adds the mask head, its losses and the
+# evaluator's segm metric.
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', 'segm']
+
+DFINETransformer:
+  mask_dim: 256        # 0 disables the mask head (plain detector)
+  mask_act: silu
+
+RTv4Criterion:
+  # loss_mask: per-pixel BCE, loss_dice: soft dice; both on matched queries, at H/4.
+  # Weights follow Mask2Former / RF-DETR-Seg (5 / 5 next to bbox 5, giou 2).
+  weight_dict: {loss_mask: 5, loss_dice: 5}
+  losses: ['mal', 'boxes', 'local', 'distill', 'masks']
+
+PostProcessor:
+  num_top_masks: 100   # COCO keeps at most 100 detections per image
+  mask_threshold: 0.5
+
+train_dataloader:
+  dataset:
+    return_masks: True
