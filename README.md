@@ -69,9 +69,10 @@ RT-DETRv4 achieves new state-of-the-art results on the COCO dataset, outperformi
 
   * [1. Getting Started](#1-getting-started)
   * [2. Usage](#2-usage)
-  * [3. Tools](#3-tools)
-  * [4. Citation](#4-citation)
-  * [5. Acknowledgement](#5-acknowledgement)
+  * [3. Instance Segmentation](#3-instance-segmentation)
+  * [4. Tools](#4-tools)
+  * [5. Citation](#5-citation)
+  * [6. Acknowledgement](#6-acknowledgement)
 
 -----
 
@@ -324,7 +325,83 @@ If you'd like to train **RT-DETRv4** on COCO2017 with an input size of 320x320, 
 
 </details>
 
-## 3\. Tools
+## 3. Instance Segmentation
+
+This fork adds query-based instance segmentation to RT-DETRv4. The regular
+detection configs remain unchanged; the mask head is enabled only in configs that
+set `DFINETransformer.mask_dim` above zero. Set it to `0` to use the detector
+without masks.
+
+### Model and losses
+
+The mask feature head upsamples the encoder's stride-8 feature map to stride 4.
+Each decoder query produces a mask embedding, and the embedding is combined with
+the mask features to produce a mask. Training adds binary cross-entropy and Dice
+losses for matched queries. Evaluation reports both COCO `bbox` and `segm` metrics.
+
+Implementation details are in [README_SEG.md](./README_SEG.md), and the mask head
+is implemented in [engine/rtv4/mask_head.py](./engine/rtv4/mask_head.py).
+
+### Dataset format
+
+Use COCO instance annotations with a `segmentation` field containing polygons or
+RLE masks. The dataset loader supports compressed RLE. Enable mask loading for the
+training dataset with `return_masks: True`; the segmentation base config does this
+for the training loader. Validation can use the annotation file for COCO mask
+evaluation without loading mask tensors into the validation loader.
+
+For a custom dataset, update the image and annotation paths in a dataset config,
+set `num_classes`, and choose `remap_mscoco_category` to match your category IDs.
+When remapping is disabled, category IDs are used as class indices. For example,
+the included handoff config uses category IDs 1 (person) and 2 (clothing), with
+`num_classes: 3` and class 0 unused. See
+[configs/dataset/handoff_fullframe_seg.yml](./configs/dataset/handoff_fullframe_seg.yml).
+
+### Train and evaluate
+
+The included RT-DETRv4-S segmentation config is
+[configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml](./configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml).
+Its dataset paths point to the original handoff dataset location, so edit
+`img_folder` and `ann_file` in the included dataset config for your machine before
+training.
+
+```shell
+python train.py \
+  -c configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml \
+  --use-amp --seed 0
+```
+
+The config uses a 640×640 input and an 80-epoch schedule. Checkpoints and logs are
+written under `outputs/rtv4_seg_hgnetv2_s_handoff`. To evaluate a checkpoint:
+
+```shell
+python train.py \
+  -c configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml \
+  --test-only -r outputs/rtv4_seg_hgnetv2_s_handoff/best_stg2.pth
+```
+
+### Export for DeepStream
+
+The DeepStream exporter produces detections in the `NvDsInferParseYoloSeg` layout.
+Install the deployment dependencies (`onnx`, `onnxruntime`, `onnxslim`, and
+`scipy`) and export a trained checkpoint:
+
+```shell
+python tools/deployment/export_onnx_seg_deepstream.py \
+  -c configs/rtv4_seg/rtv4_seg_hgnetv2_s_handoff.yml \
+  -r outputs/rtv4_seg_hgnetv2_s_handoff/best_stg2.pth \
+  --labels person clothing
+```
+
+The default output is `<checkpoint>_ds.onnx`, with input `input` (RGB float values
+in `[0, 1]`) and output `output`. At 640×640, each detection row contains `x1, y1,
+x2, y2, score, class_id` followed by a flattened 160×160 sigmoid mask aligned to
+that detection's box. By default, the exporter subtracts one from category IDs so
+IDs 1 and 2 map to labels 0 and 1. Use `--label-offset` if your dataset uses a
+different category-ID convention. The exporter also compares ONNX Runtime output
+with PyTorch output.
+
+## 4\. Tools
 
 <details>
 <summary> Deployment </summary>
@@ -427,7 +504,7 @@ If you'd like to train **RT-DETRv4** on COCO2017 with an input size of 320x320, 
 
 </details>
 
-## 4\. Citation
+## 5\. Citation
 
 If you find this work helpful, please consider citing:
 
@@ -440,7 +517,7 @@ If you find this work helpful, please consider citing:
 }
 ```
 
-## 5\. Acknowledgement
+## 6\. Acknowledgement
 
 Our work is built upon [RT-DETR](https://github.com/lyuwenyu/RT-DETR), [D-FINE](https://github.com/Peterande/D-FINE), [DEIM](https://github.com/Intellindust-AI-Lab/DEIM) and Teacher Model [DINOv3](https://github.com/facebookresearch/dinov3).
 Thanks to these remarkable works!
